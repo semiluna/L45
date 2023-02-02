@@ -218,7 +218,7 @@ def train(args):
     root_dir = os.path.join(CHECKPOINT_PATH, args.model)
     os.makedirs(root_dir, exist_ok=True)
 
-    # wandb_logger = WandbLogger(project='part3-res-prediction-diss')
+    # wandb_logger = WandbLogger(project='l45-random-gnn')
 
     if args.gpus > 0:
         trainer = pl.Trainer(
