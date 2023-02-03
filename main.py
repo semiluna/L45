@@ -15,7 +15,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-from atom3d.datasets import LMDBDataset
+from lmdb_dataset import LMDBDataset
 
 from gvp import GVP_GNN
 from protein_graph import AtomGraphBuilder, _element_alphabet
