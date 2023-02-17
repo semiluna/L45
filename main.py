@@ -6,10 +6,14 @@ import argparse
 import random
 import pickle
 
+import lovely_tensors as lt
+
 import torch
 import torch.nn as nn
 import torch.optim as optim 
 from torch.utils.data import DataLoader, IterableDataset
+
+from torch_geometric.loader import DataLoader as geom_DataLoader
 
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
@@ -62,28 +66,29 @@ _DEFAULT_V_DIM = (100, 16)
 _DEFAULT_E_DIM = (32, 1)
 
 class RES_GVP(nn.Module):
-    def __init__(self, example, **model_args):
+    def __init__(self, example, dropout, **model_args):
         super().__init__()
         ns, _ = _DEFAULT_V_DIM
         self.gvp = GVP_GNN.init_from_example(example, **model_args)
         self.dense = nn.Sequential(
             nn.Linear(ns, 2*ns), nn.ReLU(inplace=True),
-            nn.Dropout(p=0.1),
+            nn.Dropout(p=dropout),
             nn.Linear(2*ns, 20)
         )   
     
     def forward(self, graph):
-        out = self.gvp(graph)
+        out = self.gvp(graph, scatter_mean=False)
         out = self.dense(out)
-        return out
+        return out[graph.ca_idx + graph.ptr[:-1]]
 
 MODEL_SELECT = {'gvp': RES_GVP }
 
 class ModelWrapper(pl.LightningModule):
-    def __init__(self, model_cls, lr, example, **model_args):
+    def __init__(self, model_name, lr, example, dropout, **model_args):
         super().__init__()
         # self.model = model_cls(example, device=self.device, **model_args)
-        self.model = model_cls(example, **model_args)
+        model_cls = MODEL_SELECT[model_name]
+        self.model = model_cls(example, dropout, **model_args)
         self.lr = lr
         self.loss_fn = nn.CrossEntropyLoss()
 
@@ -93,69 +98,78 @@ class ModelWrapper(pl.LightningModule):
 
     def training_step(self, graph, batch_idx):
         out = self.model(graph)
-        labels = torch.tensor(graph.label, dtype=torch.long).unsqueeze(-1).to(self.device)
-        
+        labels = graph.label.to(self.device)
         loss = self.loss_fn(out, labels)
-        acc = out[0, torch.argmax(out[0], dim=-1)] == labels[0]
-        self.log('train_loss', loss, batch_size=1)
+        acc = torch.sum(torch.argmax(out, dim=-1) == labels)
+        self.log('train_loss', loss)
 
-        return {'loss': loss, 'acc': acc}
+        return {'loss': loss, 'acc': acc, 'n_graphs': len(labels)}
     
     def training_epoch_end(self, outputs):
-        sum = 0
+        correct_graphs = 0
+        total_graphs = 0
         total_loss = 0.0
         for output in outputs:
-            sum += output['acc']
+            correct_graphs += output['acc']
+            total_graphs += output['n_graphs']
             total_loss += output['loss']
-        acc = 1.0 * sum / len(outputs)
+        acc = 1.0 * correct_graphs / total_graphs
+        total_loss /= len(outputs)
 
-        self.log('train_acc_on_epoch_end', acc, batch_size=1)
-        self.log('train_loss_on_epoch_end', total_loss, batch_size=1)
+        self.log('train_acc_on_epoch_end', acc, sync_dist=True)
+        self.log('train_loss_on_epoch_end', total_loss, sync_dist=True)
 
     def validation_step(self, graph, batch_idx):
         out = self.model(graph)
-        labels = torch.tensor(graph.label, dtype=torch.long).unsqueeze(-1).to(self.device)
-
+        labels = graph.label.to(self.device)
         loss = self.loss_fn(out, labels)
-        acc = out[0, torch.argmax(out[0], dim=-1)] == labels[0]
-        self.log('val_loss', loss, batch_size=1)
+        acc = torch.sum(torch.argmax(out, dim=-1) == labels)
+        self.log('val_loss', loss, batch_size = len(labels))
 
-        return {'loss': loss, 'acc': acc}
+        return {'loss': loss, 'acc': acc, 'n_graphs': len(labels)}
     
     def validation_epoch_end(self, outputs):
-        sum = 0
+        correct_graphs = 0
+        total_graphs = 0
         total_loss = 0.0
         for output in outputs:
-            sum += output['acc']
+            correct_graphs += output['acc']
+            total_graphs += output['n_graphs']
             total_loss += output['loss']
-        acc = 1.0 * sum / len(outputs)
+        acc = 1.0 * correct_graphs / total_graphs
+        total_loss /= len(outputs)
 
-        self.log('val_acc_on_epoch_end', acc, batch_size=1)
-        self.log('val_loss_on_epoch_end', total_loss, batch_size=1)
+        self.log('val_acc_on_epoch_end', acc, sync_dist=True)
+        self.log('val_loss_on_epoch_end', total_loss, sync_dist=True)
     
     def test_step(self, graph, batch_idx):
         out = self.model(graph)
-        labels = torch.tensor(graph.label, dtype=torch.long).unsqueeze(-1).to(self.device)
+        labels = graph.label.to(self.device)
         
         loss = self.loss_fn(out, labels)
-        acc = out[0, torch.argmax(out[0], dim=-1)] == labels[0]
-        self.log('test_acc', acc, batch_size=1)
-        self.log('test_loss', loss, batch_size=1)
+        acc = torch.sum(torch.argmax(out[0], dim=-1) == labels)
+        self.log('test_acc', acc, batch_size=len(labels))
+        self.log('test_loss', loss, batch_size=len(labels))
 
-        return {'loss': loss, 'acc': acc}
+        return {'loss': loss, 'acc': acc, 'n_graphs': len(labels)}
     
     def test_epoch_end(self, outputs):
-        sum = 0
+        correct_graphs = 0
+        total_graphs = 0
         total_loss = 0.0
         for output in outputs:
-            sum += output['acc']
+            correct_graphs += output['acc']
+            total_graphs += output['n_graphs']
             total_loss += output['loss']
-        acc = 1.0 * sum / len(outputs)
 
-        self.log('test_acc_on_epoch_end', acc)
-        self.log('test_loss_on_epoch_end', total_loss)
+        acc = 1.0 * correct_graphs / total_graphs
+        total_loss /= len(outputs)
+
+        self.log('test_acc_on_epoch_end', acc, sync_dist=True)
+        self.log('test_loss_on_epoch_end', total_loss, sync_dist=True)
         
         return {'accuracy': acc, 'test_loss': total_loss}
+
 
 class RESDataset(IterableDataset):
     def __init__(self, dataset_path, max_len=None, sample_per_item=None, shuffle=False):
@@ -207,36 +221,37 @@ class RESDataset(IterableDataset):
                 graph = self.graph_builder(my_atoms)
                 graph.label = aa
                 graph.ca_idx = int(ca_idx)
+                graph.ensemble = item['id']
                 yield graph
 
 
 def train(args):
     pl.seed_everything(42)
-    train_dataloader = DataLoader(RESDataset(os.path.join(args.data_file, 'train'), shuffle=True, 
+    train_dataloader = geom_DataLoader(RESDataset(os.path.join(args.data_file, 'train'), shuffle=False, 
                         max_len=args.max_len, sample_per_item = args.sample_per_item), 
-                        batch_size=None, num_workers=args.data_workers)
-    val_dataloader = DataLoader(RESDataset(os.path.join(args.data_file, 'val'), 
+                        batch_size=args.batch_size, num_workers=args.data_workers)
+    val_dataloader = geom_DataLoader(RESDataset(os.path.join(args.data_file, 'val'), 
                         max_len=args.max_len, sample_per_item = args.sample_per_item), 
-                        batch_size=None, num_workers=args.data_workers)
-    test_dataloader = DataLoader(RESDataset(os.path.join(args.data_file, 'test'), 
+                        batch_size=args.batch_size, num_workers=args.data_workers)
+    test_dataloader = geom_DataLoader(RESDataset(os.path.join(args.data_file, 'test'), 
                         max_len=args.max_len, sample_per_item = args.sample_per_item), 
-                        batch_size=None, num_workers=args.data_workers)
+                        batch_size=args.batch_size, num_workers=args.data_workers)
 
     pl.seed_everything()
     example = next(iter(train_dataloader))
-    model_cls = MODEL_SELECT[args.model]
-    model = ModelWrapper(model_cls, args.lr, example, n_layers=args.n_layers)
+    model = ModelWrapper(args.model, args.lr, example, args.dropout, n_layers=args.n_layers)
 
     root_dir = os.path.join(CHECKPOINT_PATH, args.model)
     os.makedirs(root_dir, exist_ok=True)
 
-    wandb_logger = WandbLogger(project='l45-team')
-
+    wandb_logger = WandbLogger(project='part3-res-prediction-diss')
+    # lt.monkey_patch()
     if args.gpus > 0:
         trainer = pl.Trainer(
             default_root_dir=root_dir,
             callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", 
                                         monitor="val_acc_on_epoch_end")],
+            log_every_n_steps=1,
             max_epochs=args.epochs,
             accelerator='gpu',
             devices=args.gpus,
@@ -248,6 +263,7 @@ def train(args):
             default_root_dir=root_dir,
             callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", 
                                         monitor="val_acc_on_epoch_end")],
+            log_every_n_steps=1,
             max_epochs=args.epochs,
             logger=wandb_logger
         )
@@ -257,8 +273,8 @@ def train(args):
     trainer.fit(model, train_dataloader, val_dataloader)
     end = time.time()
     print('TRAINING TIME: {:.4f} (s)'.format(end - start))
-    best_model = ModelWrapper.load_from_checkpoint(
-                                trainer.checkpoint_callback.best_model_path)
+    best_model = ModelWrapper(args.model, args.lr, example, n_layers=args.n_layers)
+    best_model.load_state_dict(torch.load(trainer.checkpoint_callback.best_model_path)['state_dict'])
     
     test_result = trainer.test(best_model, test_dataloader)
     print(test_result)
@@ -274,6 +290,8 @@ def main():
     parser.add_argument('--data_workers', type=int, default=0)
     parser.add_argument('--max_len', type=int, default=None)
     parser.add_argument('--sample_per_item', type=int, default=None)
+    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--dropout', type=float, default=0.1)
 
     args = parser.parse_args()
     train(args)
