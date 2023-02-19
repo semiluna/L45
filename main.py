@@ -1,3 +1,6 @@
+import sys
+# sys.path.insert(0, '/home/aib36/.conda/envs/l45-python3.8/lib/python3.8/site-packages') # hack for HPC computing for correct numpy version
+
 import os
 import math
 import numpy as np
@@ -256,6 +259,7 @@ def train(args):
             max_epochs=args.epochs,
             accelerator='gpu',
             devices=args.gpus,
+            num_nodes = args.num_nodes,
             strategy='ddp',
             logger=wandb_logger,
         ) 
@@ -293,6 +297,7 @@ def main():
     parser.add_argument('--sample_per_item', type=int, default=None)
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--num_nodes', type=int, default=1)
 
     args = parser.parse_args()
     train(args)
