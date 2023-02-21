@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Literal, Any
 
 import numpy as np
 import pandas as pd
@@ -15,6 +15,7 @@ from atom3d.util.formats import bp_to_df, read_any
 from Bio.Data.IUPACData import protein_letters_3to1
 
 from proteins import STANDARD_AMINO_ACIDS, STANDARD_ELEMENTS
+from edge_methods import edge_generator_factory
 
 _aa_alphabet = {aa: i for i, aa in enumerate(STANDARD_AMINO_ACIDS)}
 _element_alphabet = {el: i for i, el in enumerate(STANDARD_ELEMENTS)}
@@ -87,9 +88,23 @@ class AtomGraphBuilder(ProteinGraphBuilder):
     """
 
     def __init__(
-        self, node_alphabet: dict[str, int] = _element_alphabet, edge_cutoff: float = 4.5, **kwargs
+        self,
+        node_alphabet: dict[str, int] = _element_alphabet,
+        edge_cutoff: float = 4.5,
+        edge_method: str = "radius",
+        edge_method_params: dict[str, Any] = dict(),
+        **kwargs
     ):
         super().__init__(node_alphabet, edge_cutoff, **kwargs)
+
+        if "r" not in edge_method_params:
+            edge_method_params["r"] = self.edge_cutoff
+        if "loop" not in edge_method_params:
+            edge_method_params["loop"] = self.self_loop
+
+        self.edge_generator = edge_generator_factory(
+            edge_method=edge_method, edge_method_params=edge_method_params
+        )
 
     def __call__(self, df: pd.DataFrame) -> torch_geometric.data.Data:
         """
@@ -112,7 +127,7 @@ class AtomGraphBuilder(ProteinGraphBuilder):
                 device=self.device,
             )
 
-            edge_index = torch_cluster.radius_graph(coords, r=self.edge_cutoff, loop=self.self_loop)
+            edge_index = self.edge_generator(coords)
 
             edge_s, edge_v = _edge_features(
                 coords,
