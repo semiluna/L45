@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Callable
+from typing import Any, Callable, List
 
 import torch
 import torch_cluster
@@ -7,6 +7,24 @@ import torch_cluster
 EdgeGeneratorFactory = Callable[[torch.Tensor], torch.Tensor]
 
 def edge_generator_factory(
+    edge_method: str, edge_method_params: dict[str, Any]
+) -> EdgeGeneratorFactory:
+    edge_methods = edge_method.split(" + ")
+    if len(edge_methods) == 1:
+        return single_edge_generator_factory(edge_method, edge_method_params)
+
+    # We've got multiple edge methods, so we need to return a function that
+    # will combine the returned edges
+    edge_gen_funcs = []
+    for edge_method in edge_methods:
+        single_params = edge_method_params
+        if edge_method + "_params" in edge_method_params:
+            single_params = edge_method_params[edge_method + "_params"]
+        edge_gen_funcs.append(single_edge_generator_factory(edge_method, single_params))
+
+    return combine_edge_generator_functions(edge_gen_funcs, edge_method_params)
+
+def single_edge_generator_factory(
     edge_method: str, edge_method_params: dict[str, Any]
 ) -> EdgeGeneratorFactory:
     def _edge_gen_func(coords: torch.Tensor) -> torch.Tensor:
@@ -24,20 +42,48 @@ def edge_generator_factory(
                     "n_clusters" in edge_method_params
                 ), "Need the number of clusters to perform knn."
                 edge_method_params["k"] = edge_method_params["n_clusters"]
-
             params = update_param_dict(default_params, edge_method_params)
-
             return torch_cluster.knn_graph(coords, **params)
         elif edge_method == "random_inverse_cubic":
             default_params = {"num_edges": 40, "inverse_temp": 1}
             params = update_param_dict(default_params, edge_method_params)
-
             return random_inverse_cubic_edge_generation(coords, **params)
         else:
             raise ValueError("Unexpected edge method provided: {}".format(edge_method))
 
     return _edge_gen_func
 
+
+def combine_edge_generator_functions(edge_gen_funcs: List[EdgeGeneratorFactory], edge_method_params: dict[str, Any]) -> EdgeGeneratorFactory:
+    default_params = {
+        "aggregation": "unique"
+    }
+    combiner_params = update_param_dict(default_params, edge_method_params)
+
+    def _combiner_func(coords: torch.Tensor) -> torch.Tensor:
+        edges = []
+        for edge_gen_func in edge_gen_funcs:
+            edges.append(edge_gen_func(coords))
+
+        if combiner_params["aggregation"] == "unique":
+            concatenated_edge_indices = torch.concatenate(edges, dim=1)
+            if concatenated_edge_indices.size(1) <= 1:
+                # We have a single edge or no edges
+                return concatenated_edge_indices
+            temp_idx = torch.argsort(concatenated_edge_indices, dim=-1, stable=True)[-1]
+            idx = temp_idx[torch.argsort(concatenated_edge_indices[0, temp_idx], stable=True)]
+            sorted_cnct_edge_indices = concatenated_edge_indices[:, idx]
+            cur_edge_indices = sorted_cnct_edge_indices[:, 1:]
+            prev_edge_indices = sorted_cnct_edge_indices[:, :-1]
+            unique_edge_indices = sorted_cnct_edge_indices[:, 1:][:, torch.logical_not(torch.all(cur_edge_indices == prev_edge_indices, dim=0))]
+            return torch.concatenate([sorted_cnct_edge_indices[:, 0:1], unique_edge_indices], dim=1)
+        elif combiner_params["aggregation"] == "concatenate":
+            return torch.concatenate(edges, dim=1)
+        else:
+            raise ValueError("Unexpected aggregation method for the edges provided: {}".format(combiner_params["aggregation"]))
+
+    return _combiner_func
+        
 
 def update_param_dict(
     org_dict: dict[str, Any], new_dict: dict[str, Any]
