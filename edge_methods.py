@@ -6,6 +6,7 @@ import torch_cluster
 
 EdgeGeneratorFactory = Callable[[torch.Tensor], torch.Tensor]
 
+
 def edge_generator_factory(
     edge_method: str, edge_method_params: dict[str, Any]
 ) -> EdgeGeneratorFactory:
@@ -23,6 +24,7 @@ def edge_generator_factory(
         edge_gen_funcs.append(single_edge_generator_factory(edge_method, single_params))
 
     return combine_edge_generator_functions(edge_gen_funcs, edge_method_params)
+
 
 def single_edge_generator_factory(
     edge_method: str, edge_method_params: dict[str, Any]
@@ -45,19 +47,23 @@ def single_edge_generator_factory(
             params = update_param_dict(default_params, edge_method_params)
             return torch_cluster.knn_graph(coords, **params)
         elif edge_method == "random_inverse_cubic":
-            default_params = {"num_edges": 40, "inverse_temp": 1}
+            default_params = {
+                "num_edges": 40,
+                "inverse_temp": 1,
+                "probability_distribution": "inverse_cubic",
+            }
             params = update_param_dict(default_params, edge_method_params)
-            return random_inverse_cubic_edge_generation(coords, **params)
+            return random_edge_generation(coords, **params)
         else:
             raise ValueError("Unexpected edge method provided: {}".format(edge_method))
 
     return _edge_gen_func
 
 
-def combine_edge_generator_functions(edge_gen_funcs: List[EdgeGeneratorFactory], edge_method_params: dict[str, Any]) -> EdgeGeneratorFactory:
-    default_params = {
-        "aggregation": "unique"
-    }
+def combine_edge_generator_functions(
+    edge_gen_funcs: List[EdgeGeneratorFactory], edge_method_params: dict[str, Any]
+) -> EdgeGeneratorFactory:
+    default_params = {"aggregation": "unique"}
     combiner_params = update_param_dict(default_params, edge_method_params)
 
     def _combiner_func(coords: torch.Tensor) -> torch.Tensor:
@@ -71,19 +77,32 @@ def combine_edge_generator_functions(edge_gen_funcs: List[EdgeGeneratorFactory],
                 # We have a single edge or no edges
                 return concatenated_edge_indices
             temp_idx = torch.argsort(concatenated_edge_indices, dim=-1, stable=True)[-1]
-            idx = temp_idx[torch.argsort(concatenated_edge_indices[0, temp_idx], stable=True)]
+            idx = temp_idx[
+                torch.argsort(concatenated_edge_indices[0, temp_idx], stable=True)
+            ]
             sorted_cnct_edge_indices = concatenated_edge_indices[:, idx]
             cur_edge_indices = sorted_cnct_edge_indices[:, 1:]
             prev_edge_indices = sorted_cnct_edge_indices[:, :-1]
-            unique_edge_indices = sorted_cnct_edge_indices[:, 1:][:, torch.logical_not(torch.all(cur_edge_indices == prev_edge_indices, dim=0))]
-            return torch.concatenate([sorted_cnct_edge_indices[:, 0:1], unique_edge_indices], dim=1)
+            unique_edge_indices = sorted_cnct_edge_indices[:, 1:][
+                :,
+                torch.logical_not(
+                    torch.all(cur_edge_indices == prev_edge_indices, dim=0)
+                ),
+            ]
+            return torch.concatenate(
+                [sorted_cnct_edge_indices[:, 0:1], unique_edge_indices], dim=1
+            )
         elif combiner_params["aggregation"] == "concatenate":
             return torch.concatenate(edges, dim=1)
         else:
-            raise ValueError("Unexpected aggregation method for the edges provided: {}".format(combiner_params["aggregation"]))
+            raise ValueError(
+                "Unexpected aggregation method for the edges provided: {}".format(
+                    combiner_params["aggregation"]
+                )
+            )
 
     return _combiner_func
-        
+
 
 def update_param_dict(
     org_dict: dict[str, Any], new_dict: dict[str, Any]
@@ -94,14 +113,38 @@ def update_param_dict(
     return org_dict
 
 
-def random_inverse_cubic_edge_generation(
-    coords: torch.Tensor, inverse_temp: float, num_edges: int
+def calculate_phi(
+    dists: torch.Tensor, probability_distribution: str, **kwargs
+) -> torch.Tensor:
+    if probability_distribution == "inverse_cubic":
+        return -3 * torch.log(dists)
+    elif probability_distribution == "uniform":
+        return torch.ones_like(dists)
+    elif probability_distribution == "exponential":
+        default_params = {"scale": 1.0}
+        params = update_param_dict(default_params, kwargs)
+        scale = params["scale"]
+        return -dists * kwargs / scale
+    else:
+        raise ValueError(
+            "Unexpected probability method for random edges provided: {}".format(
+                probability_distribution
+            )
+        )
+
+
+def random_edge_generation(
+    coords: torch.Tensor,
+    inverse_temp: float,
+    num_edges: int,
+    probability_distribution: str,
+    **kwargs,
 ) -> torch.Tensor:
     # coords.shape = [N, 3]
     dists = torch.cdist(coords, coords, p=2)  # [N, N]
     # Setting the diagonal distance values to inf to avoid self-loops here
     dists = dists.fill_diagonal_(torch.inf)
-    phi = -3 * torch.log(dists)  # [N, N]
+    phi = calculate_phi(dists, probability_distribution, **kwargs)  # [N, N]
 
     epsilon = torch.empty_like(phi).uniform_()
     log_epsilon = torch.log(epsilon)
