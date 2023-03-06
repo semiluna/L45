@@ -1,4 +1,5 @@
 import sys
+import signal
 # sys.path.insert(0, '/home/aib36/.conda/envs/l45-python3.8/lib/python3.8/site-packages') # hack for HPC computing for correct numpy version
 
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -27,6 +28,7 @@ from torchdrug.metrics import f1_max
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.plugins.environments import SLURMEnvironment
 
 # from atom3d.datasets import LMDBDataset
 from lmdb_dataset import LMDBDataset
@@ -462,6 +464,11 @@ def train(args):
     wandb_logger = WandbLogger(project='l45-team')
     # lt.monkey_patch()
     if args.gpus > 0:
+        if args.slurm:
+            plugins = [SLURMEnvironment(requeue_signal=signal.SIGHUP)]
+        else:
+            plugins = None
+
         trainer = pl.Trainer(
             default_root_dir=root_dir,
             callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", 
@@ -473,6 +480,7 @@ def train(args):
             num_nodes = args.num_nodes,
             strategy='ddp',
             logger=wandb_logger,
+            plugins=plugins
         ) 
     else:
         trainer = pl.Trainer(
@@ -509,6 +517,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--num_nodes', type=int, default=1)
+    parser.add_argument('--slurm', action='store_true', help='Whether or not this is a SLURM job.')
 
     args = parser.parse_args()
     train(args)
