@@ -103,7 +103,7 @@ class GO_GVP(nn.Module):
         out = self.gvp(graph, scatter_mean=False)
         # Perform readout by summing all features in the graph
         # TODO: Should we concatenate features from all layers?
-        readout = scatter_sum(out, batch=graph.batch, dim=0)
+        readout = scatter_sum(out, index=graph.batch, dim=0)
         out = self.dense(readout)
         return out
     
@@ -231,7 +231,10 @@ class GOModelWrapper(pl.LightningModule):
 
     def training_step(self, graph, batch_idx):
         out = self.model(graph)
-        labels = graph.label.to(self.device)
+
+        num_graphs = graph.num_graphs
+        labels = graph.targets.to(self.device).reshape(num_graphs, -1)
+        assert labels.shape == (num_graphs, GO_LABELS)
         loss = self.loss_fn(out, labels)
 
         self.log('train_loss', loss)
@@ -248,10 +251,11 @@ class GOModelWrapper(pl.LightningModule):
 
     def validation_step(self, graph, batch_idx):
         out = self.model(graph)
-        labels = graph.label.to(self.device)
+        num_graphs = graph.num_graphs
+        labels = graph.targets.to(self.device).reshape(num_graphs, -1)
+        assert labels.shape == (num_graphs, GO_LABELS)
         loss = self.loss_fn(out, labels)
         self.log('val_loss', loss, batch_size = len(labels))
-
         return {'loss': loss, 'preds': out, 'targets': labels}
     
     def validation_epoch_end(self, outputs):
@@ -263,18 +267,20 @@ class GOModelWrapper(pl.LightningModule):
             preds_list.append(output['preds'])
             targets_list.append(output['targets'])
         
-        preds = torch.cat(preds_list)
-        targets = torch.cat(targets_list)
-        f1_max_score = f1_max(preds, targets)
-
-        total_loss /= len(outputs)
-
-        self.log('val_f1_max_on_epoch_end', f1_max_score, sync_dist=True)
+        if len(outputs) > 0:
+            preds = torch.cat(preds_list)
+            targets = torch.cat(targets_list)
+            f1_max_score = f1_max(preds, targets)
+            self.log('val_f1_max_on_epoch_end', f1_max_score, sync_dist=True)
+            total_loss /= len(outputs)
+        
         self.log('val_loss_on_epoch_end', total_loss, sync_dist=True)
     
     def test_step(self, graph, batch_idx):
         out = self.model(graph)
-        labels = graph.label.to(self.device)        
+        num_graphs = graph.num_graphs
+        labels = graph.targets.to(self.device).reshape(num_graphs, -1)  
+        assert labels.shape == (num_graphs, GO_LABELS)
         loss = self.loss_fn(out, labels)
 
         return {'loss': loss, 'preds': out, 'targets': labels}
@@ -294,7 +300,7 @@ class GOModelWrapper(pl.LightningModule):
 
         total_loss /= len(outputs)
 
-        self.log('test_acc_on_epoch_end', f1_max_score, sync_dist=True)
+        self.log('test_f1_max_on_epoch_end', f1_max_score, sync_dist=True)
         self.log('test_loss_on_epoch_end', total_loss, sync_dist=True)
         
         return {'f1_max': f1_max_score, 'test_loss': total_loss}
@@ -311,9 +317,11 @@ class GODataset(IterableDataset):
         if split == 'train':
             start, stop = 0, dataset.num_samples[0]
         elif split == 'valid':
-            start, stop = dataset.num_samples[0:2]
+            start = dataset.num_samples[0]
+            stop = start + dataset.num_samples[1]
         elif split == 'test':
-            start, stop = dataset.num_samples[1:]
+            start = dataset.num_samples[0] + dataset.num_samples[1]
+            stop = start + dataset.num_samples[2]
         else:
             raise Exception("Unknown split for dataset.")
         
@@ -423,7 +431,7 @@ def train(args):
     # test_dataloader = geom_DataLoader(RESDataset(os.path.join(args.data_file, 'test'), 
     #                     max_len=args.max_len, sample_per_item = args.sample_per_item), 
     #                     batch_size=args.batch_size, num_workers=args.data_workers)
-
+    print('INFO: loading all graphs into memory...')
     raw_dataset = ProteinDataset(args.data_file) 
     train_dataloader = geom_DataLoader(GODataset(raw_dataset, split='train', max_len=args.max_len, shuffle=False), 
                         batch_size=args.batch_size, num_workers=args.data_workers)
@@ -434,10 +442,17 @@ def train(args):
     test_dataloader = geom_DataLoader(GODataset(raw_dataset, split='test', max_len=args.max_len, shuffle=False), 
                         batch_size=args.batch_size, num_workers=args.data_workers)
     
-
+    # Compute class weights
+    stop = raw_dataset.num_samples[0]
+    target_totals = torch.zeros((GO_LABELS,))
+    for idx in range(stop):
+        item = raw_dataset[idx]
+        target_totals = target_totals + item['targets']
+    label_weights = target_totals / stop
+    
     pl.seed_everything()
     example = next(iter(train_dataloader))
-    model = GOModelWrapper(args.model, args.lr, example, args.dropout, n_layers=args.n_layers)
+    model = GOModelWrapper(args.model, label_weights, args.lr, example, args.dropout, n_layers=args.n_layers)
 
     root_dir = os.path.join(CHECKPOINT_PATH, args.model)
     os.makedirs(root_dir, exist_ok=True)
