@@ -1,6 +1,8 @@
 import sys
 # sys.path.insert(0, '/home/aib36/.conda/envs/l45-python3.8/lib/python3.8/site-packages') # hack for HPC computing for correct numpy version
 
+torch.multiprocessing.set_sharing_strategy('file_system')
+
 import os
 import math
 import numpy as np
