@@ -9,6 +9,8 @@ import argparse
 import random
 import pickle
 
+from torch_scatter import scatter_sum
+
 # import lovely_tensors as lt
 import dadaptation
 import torch
@@ -17,6 +19,8 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, IterableDataset
 
 from torch_geometric.loader import DataLoader as geom_DataLoader
+
+from torchdrug.metrics import f1_max
 
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
@@ -68,6 +72,41 @@ _amino_acids = lambda x: {
 _DEFAULT_V_DIM = (100, 16)
 _DEFAULT_E_DIM = (32, 1)
 
+# TODO: should this dimensions be bigger, given that we have ~500 possible labels?
+GO_DEFAULT_V_DIM = (200, 32)
+GO_DEFAULT_E_DIM = (64, 1)
+
+GO_LABELS = 489
+
+class GO_GVP(nn.Module):
+    def __init__(self, 
+                example, 
+                dropout, 
+                n_h_node_feats = GO_DEFAULT_V_DIM, 
+                n_h_edge_feats = GO_DEFAULT_E_DIM, 
+                **model_args):
+        super().__init__()
+        ns, _ = GO_DEFAULT_V_DIM
+        self.gvp = GVP_GNN.init_from_example(example, 
+                                            n_h_edge_feats = n_h_edge_feats,
+                                            n_h_edge_feats = n_h_edge_feats, 
+                                            **model_args)
+        # MLP with 2 hidden layers
+        self.dense = nn.Sequential(
+            nn.Linear(ns, 2*ns), nn.ReLU(inplace=True), nn.Dropout(p=dropout),
+            nn.Linear(2*ns, 4*ns), nn.ReLU(inplace=True), nn.Dropout(p=dropout),
+            nn.Linear(4*ns, GO_LABELS)
+        )
+    
+    def forward(self, graph):
+        out = self.gvp(graph, scatter_mean=False)
+        # Perform readout by summing all features in the graph
+        # TODO: Should we concatenate features from all layers?
+        readout = scatter_sum(out, batch=graph.batch, dim=0)
+        out = self.dense(readout)
+        return out
+    
+
 class RES_GVP(nn.Module):
     def __init__(self, example, dropout, **model_args):
         super().__init__()
@@ -84,7 +123,7 @@ class RES_GVP(nn.Module):
         out = self.dense(out)
         return out[graph.ca_idx + graph.ptr[:-1]]
 
-MODEL_SELECT = {'gvp': RES_GVP }
+MODEL_SELECT = {'gvp': RES_GVP, 'go': GO_GVP }
 
 class ModelWrapper(pl.LightningModule):
     def __init__(self, model_name, lr, example, dropout, **model_args):
@@ -173,6 +212,94 @@ class ModelWrapper(pl.LightningModule):
         self.log('test_loss_on_epoch_end', total_loss, sync_dist=True)
         
         return {'accuracy': acc, 'test_loss': total_loss}
+
+class GOModelWrapper(pl.LightningModule):
+    def __init__(self, model_name, label_weight, lr, example, dropout, **model_args):
+        super().__init__()
+        # self.model = model_cls(example, device=self.device, **model_args)
+        model_cls = MODEL_SELECT[model_name]
+        self.model = model_cls(example, dropout, **model_args)
+        self.lr = lr
+        self.loss_fn = nn.BCEWithLogitsLoss(weight=label_weight, reduction='sum')
+
+    def configure_optimizers(self):
+        # optimiser = optim.Adam(self.parameters(), lr=self.lr)
+        optimiser = dadaptation.DAdaptAdam(self.parameters(), lr=1.0)
+        return optimiser
+
+    def training_step(self, graph, batch_idx):
+        out = self.model(graph)
+        labels = graph.label.to(self.device)
+        loss = self.loss_fn(out, labels)
+
+        self.log('train_loss', loss)
+
+        return {'loss': loss}
+    
+    def training_epoch_end(self, outputs):
+        total_loss = 0.0
+        for output in outputs:
+            total_loss += output['loss']
+        total_loss /= len(outputs)
+
+        self.log('train_loss_on_epoch_end', total_loss, sync_dist=True)
+
+    def validation_step(self, graph, batch_idx):
+        out = self.model(graph)
+        labels = graph.label.to(self.device)
+        loss = self.loss_fn(out, labels)
+        self.log('val_loss', loss, batch_size = len(labels))
+
+        return {'loss': loss, 'preds': out, 'targets': labels}
+    
+    def validation_epoch_end(self, outputs):
+        total_loss = 0.0
+        preds_list = []
+        targets_list = []
+        for output in outputs:
+            total_loss += output['loss']
+            preds_list.append(output['preds'])
+            targets_list.append(output['targets'])
+        
+        preds = torch.cat(preds_list)
+        targets = torch.cat(targets_list)
+        f1_max_score = f1_max(preds, targets)
+
+        total_loss /= len(outputs)
+
+        self.log('val_f1_max_on_epoch_end', f1_max_score, sync_dist=True)
+        self.log('val_loss_on_epoch_end', total_loss, sync_dist=True)
+    
+    def test_step(self, graph, batch_idx):
+        out = self.model(graph)
+        labels = graph.label.to(self.device)        
+        loss = self.loss_fn(out, labels)
+
+        return {'loss': loss, 'preds': out, 'targets': labels}
+    
+    def test_epoch_end(self, outputs):
+        total_loss = 0.0
+        preds_list = []
+        targets_list = []
+        for output in outputs:
+            total_loss += output['loss']
+            preds_list.append(output['preds'])
+            targets_list.append(output['targets'])
+
+        preds = torch.cat(preds_list)
+        targets = torch.cat(targets_list)
+        f1_max_score = f1_max(preds, targets)
+
+        total_loss /= len(outputs)
+
+        self.log('test_acc_on_epoch_end', f1_max_score, sync_dist=True)
+        self.log('test_loss_on_epoch_end', total_loss, sync_dist=True)
+        
+        return {'f1_max': f1_max_score, 'test_loss': total_loss}
+
+class GODataset(IterableDataset):
+    def __init__():
+        raise NotImplementedError
 
 
 class RESDataset(IterableDataset):
