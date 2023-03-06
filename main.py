@@ -28,6 +28,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 # from atom3d.datasets import LMDBDataset
 from lmdb_dataset import LMDBDataset
+from pdb_dataset import ProteinDataset
 
 from gvp import GVP_GNN
 from protein_graph import AtomGraphBuilder, _element_alphabet
@@ -88,7 +89,7 @@ class GO_GVP(nn.Module):
         super().__init__()
         ns, _ = GO_DEFAULT_V_DIM
         self.gvp = GVP_GNN.init_from_example(example, 
-                                            n_h_edge_feats = n_h_edge_feats,
+                                            n_h_node_feats = n_h_node_feats,
                                             n_h_edge_feats = n_h_edge_feats, 
                                             **model_args)
         # MLP with 2 hidden layers
@@ -213,6 +214,7 @@ class ModelWrapper(pl.LightningModule):
         
         return {'accuracy': acc, 'test_loss': total_loss}
 
+
 class GOModelWrapper(pl.LightningModule):
     def __init__(self, model_name, label_weight, lr, example, dropout, **model_args):
         super().__init__()
@@ -297,9 +299,63 @@ class GOModelWrapper(pl.LightningModule):
         
         return {'f1_max': f1_max_score, 'test_loss': total_loss}
 
+
 class GODataset(IterableDataset):
-    def __init__():
-        raise NotImplementedError
+    def __init__(self, dataset, max_len=None, split='train', shuffle=False):
+        self.dataset = dataset
+        start, stop = 0, len(dataset)
+        self.max_len = max_len
+        self.shuffle = shuffle
+        self.graph_builder = AtomGraphBuilder(_element_alphabet)
+        # import ipdb; ipdb.set_trace()
+        if split == 'train':
+            start, stop = 0, dataset.num_samples[0]
+        elif split == 'valid':
+            start, stop = dataset.num_samples[0:2]
+        elif split == 'test':
+            start, stop = dataset.num_samples[1:]
+        else:
+            raise Exception("Unknown split for dataset.")
+        
+        self.start, self.stop = start, stop
+
+    def __iter__(self):
+        length = self.stop - self.start
+        if self.max_len:
+            length = min(length, self.max_len)
+        indices = list(range(self.start, self.stop + length))
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            gen = self._dataset_generator(indices)
+        else:  
+            per_worker = int(math.ceil(length / float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            iter_start = worker_id * per_worker
+            iter_end = min(iter_start + per_worker, length)
+            gen = self._dataset_generator(indices[iter_start:iter_end])
+        return gen
+    
+    def _dataset_generator(self, indices):
+        if self.shuffle:
+            random.shuffle(indices)
+        for idx in indices:
+            item = self.dataset[idx]
+
+            atoms = item['atoms'].df['ATOM']
+            targets = item['targets']
+            pdb_file = item['atoms'].pdb_path
+
+            atoms = atoms.rename(columns={
+                        'x_coord': 'x', 
+                        'y_coord':'y', 
+                        'z_coord': 'z', 
+                        'element_symbol': 'element'})
+            
+
+            graph = self.graph_builder(atoms)
+            graph.targets = targets
+            graph.pdb_file = pdb_file
+            yield graph
 
 
 class RESDataset(IterableDataset):
@@ -358,19 +414,30 @@ class RESDataset(IterableDataset):
 
 def train(args):
     pl.seed_everything(42)
-    train_dataloader = geom_DataLoader(RESDataset(os.path.join(args.data_file, 'train'), shuffle=False, 
-                        max_len=args.max_len, sample_per_item = args.sample_per_item), 
+    # train_dataloader = geom_DataLoader(RESDataset(os.path.join(args.data_file, 'train'), shuffle=False, 
+    #                     max_len=args.max_len, sample_per_item = args.sample_per_item), 
+    #                     batch_size=args.batch_size, num_workers=args.data_workers)
+    # val_dataloader = geom_DataLoader(RESDataset(os.path.join(args.data_file, 'val'), 
+    #                     max_len=args.max_len, sample_per_item = args.sample_per_item), 
+    #                     batch_size=args.batch_size, num_workers=args.data_workers)
+    # test_dataloader = geom_DataLoader(RESDataset(os.path.join(args.data_file, 'test'), 
+    #                     max_len=args.max_len, sample_per_item = args.sample_per_item), 
+    #                     batch_size=args.batch_size, num_workers=args.data_workers)
+
+    raw_dataset = ProteinDataset(args.data_file) 
+    train_dataloader = geom_DataLoader(GODataset(raw_dataset, split='train', max_len=args.max_len, shuffle=False), 
                         batch_size=args.batch_size, num_workers=args.data_workers)
-    val_dataloader = geom_DataLoader(RESDataset(os.path.join(args.data_file, 'val'), 
-                        max_len=args.max_len, sample_per_item = args.sample_per_item), 
+                        
+    val_dataloader = geom_DataLoader(GODataset(raw_dataset, split='valid', max_len=args.max_len, shuffle=False), 
                         batch_size=args.batch_size, num_workers=args.data_workers)
-    test_dataloader = geom_DataLoader(RESDataset(os.path.join(args.data_file, 'test'), 
-                        max_len=args.max_len, sample_per_item = args.sample_per_item), 
+    
+    test_dataloader = geom_DataLoader(GODataset(raw_dataset, split='test', max_len=args.max_len, shuffle=False), 
                         batch_size=args.batch_size, num_workers=args.data_workers)
+    
 
     pl.seed_everything()
     example = next(iter(train_dataloader))
-    model = ModelWrapper(args.model, args.lr, example, args.dropout, n_layers=args.n_layers)
+    model = GOModelWrapper(args.model, args.lr, example, args.dropout, n_layers=args.n_layers)
 
     root_dir = os.path.join(CHECKPOINT_PATH, args.model)
     os.makedirs(root_dir, exist_ok=True)
@@ -413,7 +480,7 @@ def train(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default='gvp', choices=['gvp'])
+    parser.add_argument('--model', type=str, default='go', choices=['gvp','go'])
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--n_layers', type=int, default=5)
