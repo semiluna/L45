@@ -447,11 +447,14 @@ def train(args):
                         batch_size=args.batch_size, num_workers=args.data_workers)
     
     # Compute class weights
+    print('Compute raw class weights...')
     stop = raw_dataset.num_samples[0]
     target_totals = torch.zeros((GO_LABELS,))
     for idx in range(stop):
         item = raw_dataset[idx]
+        # print(f'Number of nodes: {len(item["atoms"].df["ATOM"])}')
         target_totals = target_totals + item['targets']
+        del item
     label_weights = target_totals / stop
     
     pl.seed_everything()

@@ -68,15 +68,17 @@ class ProteinDataset(Dataset):
                 if line[idx] == "0":
                     pdb_ids.append(line[0])
 
-        if os.path.exists(pkl_file):
-            self.load_pickle(pkl_file, verbose=verbose, **kwargs)
-        else:
-            pdb_files = []
-            for split in ["train", "valid", "test"]:
-                split_path = utils.extract(os.path.join(path, "%s.zip" % split))
-                pdb_files += sorted(glob.glob(os.path.join(split_path, split, "*.pdb")))
-            self.load_pdbs(pdb_files, verbose=verbose, **kwargs)
-            self.save_pickle(pkl_file, verbose=verbose)
+        # if os.path.exists(pkl_file):
+        #     self.load_pickle(pkl_file, verbose=verbose, **kwargs)
+        # else:
+        pdb_files = []
+        for split in ["train", "valid", "test"]:
+            split_path = utils.extract(os.path.join(path, "%s.zip" % split))
+            pdb_files += sorted(glob.glob(os.path.join(split_path, split, "*.pdb")))
+        self.pdb_files = pdb_files
+        # self.load_pdbs(pdb_files, verbose=verbose, **kwargs)
+        # self.save_pickle(pkl_file, verbose=verbose)
+
         if len(pdb_ids) > 0:
             self.filter_pdb(pdb_ids)
 
@@ -198,13 +200,15 @@ class ProteinDataset(Dataset):
     
     def __len__(self):
         print('WARNING: "len" function only works if the entire dataset is loaded into memory')
-        return len(self.data)
+        return len(self.pdb_files)
 
     def __getitem__(self, index):
-        protein = copy.deepcopy(self.data[index])
+        pdb_file = self.pdb_files[index]
+        protein = PandasPdb().read_pdb(pdb_file)
+        # protein = copy.deepcopy(self.data[index])
         item = {"atoms": protein}
-        if self.transform:
-            item = self.transform(item)
+        # if self.transform:
+        #     item = self.transform(item)
         indices = self.pos_targets[index].unsqueeze(0)
         values = torch.ones(len(self.pos_targets[index]))
         item["targets"] = utils.sparse_coo_tensor(indices, values, (len(self.targets),)).to_dense()
