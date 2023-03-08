@@ -262,7 +262,7 @@ class GOModelWrapper(pl.LightningModule):
         assert labels.shape == (num_graphs, GO_LABELS)
         loss = self.loss_fn(out, labels)
         self.log('val_loss', loss, batch_size = len(labels))
-        return {'loss': loss, 'preds': out, 'targets': labels}
+        return {'loss': loss, 'preds': out.detach(), 'targets': labels.detach()}
     
     def validation_epoch_end(self, outputs):
         total_loss = 0.0
@@ -289,7 +289,7 @@ class GOModelWrapper(pl.LightningModule):
         assert labels.shape == (num_graphs, GO_LABELS)
         loss = self.loss_fn(out, labels)
 
-        return {'loss': loss, 'preds': out, 'targets': labels}
+        return {'loss': loss, 'preds': out.detach(), 'targets': labels.detach()}
     
     def test_epoch_end(self, outputs):
         total_loss = 0.0
