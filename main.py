@@ -35,7 +35,7 @@ from lmdb_dataset import LMDBDataset
 from pdb_dataset import ProteinDataset
 
 from gvp import GVP_GNN
-from protein_graph import AtomGraphBuilder, _element_alphabet
+from protein_graph import AtomGraphBuilder, _element_alphabet, ResidueGraphBuilder
 
 from edge_methods import convert_to_edge_method_params_dict
 
@@ -80,7 +80,7 @@ _DEFAULT_V_DIM = (100, 16)
 _DEFAULT_E_DIM = (32, 1)
 
 # TODO: should this dimensions be bigger, given that we have ~500 possible labels?
-GO_DEFAULT_V_DIM = (200, 32)
+GO_DEFAULT_V_DIM = (100, 32)
 GO_DEFAULT_E_DIM = (64, 1)
 
 GO_LABELS = 489
@@ -100,15 +100,14 @@ class GO_GVP(nn.Module):
                                             **model_args)
         # MLP with 2 hidden layers
         self.dense = nn.Sequential(
-            nn.Linear(ns, 2*ns), nn.ReLU(inplace=True), nn.Dropout(p=dropout),
-            nn.Linear(2*ns, 4*ns), nn.ReLU(inplace=True), nn.Dropout(p=dropout),
-            nn.Linear(4*ns, GO_LABELS)
+            nn.Linear(model_args['n_layers'] * ns, 2*ns), nn.ReLU(inplace=True), nn.Dropout(p=dropout),
+            # nn.Linear(2*ns, 4*ns), nn.ReLU(inplace=True), nn.Dropout(p=dropout),
+            nn.Linear(2*ns, GO_LABELS)
         )
     
     def forward(self, graph):
         out = self.gvp(graph, scatter_mean=False)
         # Perform readout by summing all features in the graph
-        # TODO: Should we concatenate features from all layers?
         readout = scatter_sum(out, index=graph.batch, dim=0)
         out = self.dense(readout)
         return out
@@ -150,7 +149,7 @@ class ModelWrapper(pl.LightningModule):
         out = self.model(graph)
         labels = graph.label.to(self.device)
         loss = self.loss_fn(out, labels)
-        acc = torch.sum(torch.argmax(out, dim=-1) == labels)
+        acc = torch.sum(torch.argmax(out, dim=-1) == labels).detach()
         self.log('train_loss', loss)
 
         return {'loss': loss, 'acc': acc, 'n_graphs': len(labels)}
@@ -167,13 +166,13 @@ class ModelWrapper(pl.LightningModule):
         total_loss /= len(outputs)
 
         self.log('train_acc_on_epoch_end', acc, sync_dist=True)
-        self.log('train_loss_on_epoch_end', total_loss, sync_dist=True)
+        self.log('train_loss_on_epoch_end', total_loss.detach(), sync_dist=True)
 
     def validation_step(self, graph, batch_idx):
         out = self.model(graph)
         labels = graph.label.to(self.device)
-        loss = self.loss_fn(out, labels)
-        acc = torch.sum(torch.argmax(out, dim=-1) == labels)
+        loss = self.loss_fn(out, labels).detach()
+        acc = torch.sum(torch.argmax(out, dim=-1) == labels).detach()
         self.log('val_loss', loss, batch_size = len(labels))
 
         return {'loss': loss, 'acc': acc, 'n_graphs': len(labels)}
@@ -196,8 +195,8 @@ class ModelWrapper(pl.LightningModule):
         out = self.model(graph)
         labels = graph.label.to(self.device)
         
-        loss = self.loss_fn(out, labels)
-        acc = torch.sum(torch.argmax(out[0], dim=-1) == labels)
+        loss = self.loss_fn(out, labels).detach()
+        acc = torch.sum(torch.argmax(out[0], dim=-1) == labels).detach()
         self.log('test_acc', acc, batch_size=len(labels))
         self.log('test_loss', loss, batch_size=len(labels))
 
@@ -228,7 +227,7 @@ class GOModelWrapper(pl.LightningModule):
         model_cls = MODEL_SELECT[model_name]
         self.model = model_cls(example, dropout, **model_args)
         self.lr = lr
-        self.loss_fn = nn.BCEWithLogitsLoss(weight=label_weight, reduction='sum')
+        self.loss_fn = nn.BCEWithLogitsLoss(weight=label_weight, reduction='mean')
 
     def configure_optimizers(self):
         # optimiser = optim.Adam(self.parameters(), lr=self.lr)
@@ -320,9 +319,11 @@ class GODataset(IterableDataset):
         start, stop = 0, len(dataset)
         self.max_len = max_len
         self.shuffle = shuffle
-        self.graph_builder = AtomGraphBuilder(
-            _element_alphabet, edge_method=edge_method, edge_method_params=edge_method_params
-        )
+        # self.graph_builder = AtomGraphBuilder(
+        #     _element_alphabet, edge_method=edge_method, edge_method_params=edge_method_params
+        # )
+        self.graph_builder = ResidueGraphBuilder()
+
         # import ipdb; ipdb.set_trace()
         if split == 'train':
             start, stop = 0, dataset.num_samples[0]
@@ -358,8 +359,10 @@ class GODataset(IterableDataset):
             random.shuffle(indices)
         for idx in indices:
             item = self.dataset[idx]
-
             atoms = item['atoms'].df['ATOM']
+            if (atoms['residue_name'] == 'UNK').any():
+                continue
+
             targets = item['targets']
             pdb_file = item['atoms'].pdb_path
 
@@ -367,13 +370,18 @@ class GODataset(IterableDataset):
                         'x_coord': 'x', 
                         'y_coord':'y', 
                         'z_coord': 'z', 
-                        'element_symbol': 'element'})
+                        'element_symbol': 'element', 
+                        'atom_name': 'name', 
+                        'residue_name': 'resname'})
             
-
-            graph = self.graph_builder(atoms)
-            graph.targets = targets
-            graph.pdb_file = pdb_file
-            yield graph
+            try:
+                graph = self.graph_builder(atoms)
+                graph.targets = targets
+                graph.pdb_file = pdb_file
+                yield graph
+            except Exception:
+                with open('protein_log.txt', 'a+') as handle:
+                    print(f'Could not build residue graph for {pdb_file}', file=handle)
 
 
 class RESDataset(IterableDataset):
@@ -487,6 +495,8 @@ def train(args):
             target_totals = target_totals + item['targets']
             del item
         label_weights = target_totals / stop
+        label_weights = torch.maximum(torch.ones_like(label_weights), 
+                            torch.minimum(torch.ones_like(label_weights) * 10.0, label_weights))
         with open('class_weights.pkl', 'wb') as handle:
             pickle.dump(label_weights, handle)
     
@@ -544,7 +554,7 @@ def main():
     parser.add_argument('--model', type=str, default='go', choices=['gvp','go'])
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--n_layers', type=int, default=5)
+    parser.add_argument('--n_layers', type=int, default=3)
     parser.add_argument('--gpus', type=int, default=0)
     parser.add_argument('--data_file', type=str, default=DATASET_PATH)
     parser.add_argument('--data_workers', type=int, default=0)

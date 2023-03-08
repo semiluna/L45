@@ -60,6 +60,7 @@ class GVP_GNN(nn.Module):
         n_h_node_feats: tuple[int, int] = (100, 16),  # (scalar, vector)
         n_h_edge_feats: tuple[int, int] = (32, 1),  # (scalar, vector)
         n_layers: int = 3,
+        residual: bool = True,
         # device: str = "cpu",
     ):
 
@@ -67,6 +68,7 @@ class GVP_GNN(nn.Module):
 
         activations = (F.relu, None)
 
+        self.residual = residual
         self.embed = nn.Embedding(n_node_types, n_node_types)
 
         # _logger.info("Edge input features: %s (scalar, vector)", n_in_edge_feats)
@@ -97,6 +99,12 @@ class GVP_GNN(nn.Module):
             for _ in range(n_layers)
         )
 
+        if self.residual:
+            n_h_node_feats = (
+                n_h_node_feats[0] * n_layers,
+                n_h_node_feats[1] * n_layers,
+            )
+        
         ns, _ = n_h_node_feats
         self.W_out = nn.Sequential(
             LayerNorm(n_h_node_feats),
@@ -134,6 +142,7 @@ class GVP_GNN(nn.Module):
         Returns:
             torch.Tensor: _description_
         """
+
         if isinstance(batch, torch_geometric.data.Data):
             batch = torch_geometric.data.Batch.from_data_list([batch])
         if "node_s" in batch:
@@ -141,17 +150,30 @@ class GVP_GNN(nn.Module):
         else:
             batch.node_s = self.embed(batch.node_type)
 
-        h_V = (batch.node_s, batch.node_v) if "node_v" in batch else batch.node_s
-        h_E = (batch.edge_s, batch.edge_v)
+        h_V = (batch.node_s.float(), batch.node_v.float()) if "node_v" in batch else batch.node_s.float()
+        h_E = (batch.edge_s.float(), batch.edge_v.float())
         h_V = self.W_v(h_V)
         h_E = self.W_e(h_E)
 
         batch_id = batch.batch
 
-        for layer in self.layers:
-            h_V = layer(h_V, batch.edge_index, h_E)
+        if not self.residual:
+            for layer in self.layers:
+                h_V = layer(h_V, batch.edge_index, h_E)
+            out = self.W_out(h_V)
+        else:
+            h_V_out = []
+            h_V_in = h_V
+            for layer in self.layers:
+                h_V_out.append(layer(h_V_in, batch.edge_index, h_E))
+                h_V_in = h_V_out[-1]
+            
+            h_V_out = (
+                torch.cat([h_V[0] for h_V in h_V_out], dim=-1),
+                torch.cat([h_V[1] for h_V in h_V_out], dim=-2),
+            )
+            out = self.W_out(h_V_out)
 
-        out = self.W_out(h_V)
         if scatter_mean:
             out = torch_scatter.scatter_mean(out, batch_id, dim=0)
         if dense:
