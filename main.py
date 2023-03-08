@@ -226,7 +226,7 @@ class GOModelWrapper(pl.LightningModule):
         model_cls = MODEL_SELECT[model_name]
         self.model = model_cls(example, dropout, **model_args)
         self.lr = lr
-        self.loss_fn = nn.BCEWithLogitsLoss(weight=label_weight, reduction='sum')
+        self.loss_fn = nn.BCEWithLogitsLoss(weight=label_weight, reduction='mean')
 
     def configure_optimizers(self):
         # optimiser = optim.Adam(self.parameters(), lr=self.lr)
