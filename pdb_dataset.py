@@ -209,7 +209,9 @@ class ProteinDataset(Dataset):
         item = {"atoms": protein}
         # if self.transform:
         #     item = self.transform(item)
-        indices = self.pos_targets[index].unsqueeze(0)
+        indices = self.pos_targets[index]
         values = torch.ones(len(self.pos_targets[index]))
-        item["targets"] = utils.sparse_coo_tensor(indices, values, (len(self.targets),)).to_dense()
+        item['targets'] = torch.zeros(len(self.targets))
+        item['targets'][indices] = values
+        # item["targets"] = utils.sparse_coo_tensor(indices, values, (len(self.targets),)).to_dense()
         return item

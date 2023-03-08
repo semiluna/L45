@@ -446,8 +446,7 @@ def train(args):
     test_dataloader = geom_DataLoader(GODataset(raw_dataset, split='test', max_len=args.max_len, shuffle=False), 
                         batch_size=args.batch_size, num_workers=args.data_workers)
     
-    # Compute class weights
-    
+    # Compute class weights 
     
     if os.path.exists('class_weights.pkl'):
         with open('class_weights.pkl','rb') as handle:
