@@ -496,7 +496,7 @@ def train(args):
         trainer = pl.Trainer(
             default_root_dir=root_dir,
             callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", 
-                                        monitor="val_acc_on_epoch_end")],
+                                        monitor="val_f1_max_on_epoch_end")],
             log_every_n_steps=1,
             max_epochs=args.epochs,
             logger=wandb_logger
