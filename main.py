@@ -447,15 +447,23 @@ def train(args):
                         batch_size=args.batch_size, num_workers=args.data_workers)
     
     # Compute class weights
-    print('Compute raw class weights...')
-    stop = raw_dataset.num_samples[0]
-    target_totals = torch.zeros((GO_LABELS,))
-    for idx in range(stop):
-        item = raw_dataset[idx]
-        # print(f'Number of nodes: {len(item["atoms"].df["ATOM"])}')
-        target_totals = target_totals + item['targets']
-        del item
-    label_weights = target_totals / stop
+    
+    
+    if os.path.exists('class_weights.pkl'):
+        with open('class_weights.pkl','rb') as handle:
+            label_weights = pickle.load(handle)
+    else:
+        print('Compute raw class weights...')
+        stop = raw_dataset.num_samples[0]
+        target_totals = torch.zeros((GO_LABELS,))
+        for idx in range(stop):
+            item = raw_dataset[idx]
+            print(f'Number of nodes: {len(item["atoms"].df["ATOM"])}')
+            target_totals = target_totals + item['targets']
+            del item
+        label_weights = target_totals / stop
+        with open('class_weights.pkl', 'wb') as handle:
+            pickle.dump(label_weights, handle)
     
     pl.seed_everything()
     example = next(iter(train_dataloader))
