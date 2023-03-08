@@ -221,17 +221,21 @@ class ModelWrapper(pl.LightningModule):
 
 
 class GOModelWrapper(pl.LightningModule):
-    def __init__(self, model_name, label_weight, lr, example, dropout, **model_args):
+    def __init__(self, model_name, label_weight, lr, example, dropout, adapt, **model_args):
         super().__init__()
         # self.model = model_cls(example, device=self.device, **model_args)
         model_cls = MODEL_SELECT[model_name]
         self.model = model_cls(example, dropout, **model_args)
         self.lr = lr
+        self.dadapt = adapt
         self.loss_fn = nn.BCEWithLogitsLoss(weight=label_weight, reduction='mean')
 
     def configure_optimizers(self):
         # optimiser = optim.Adam(self.parameters(), lr=self.lr)
-        optimiser = dadaptation.DAdaptAdam(self.parameters(), lr=1.0)
+        if self.dadapt:
+            optimiser = dadaptation.DAdaptAdam(self.parameters(), lr=1.0)
+        else:
+            optimiser = optim.Adam(self.parameters(), lr=self.lr)
         return optimiser
 
     def training_step(self, graph, batch_idx):
@@ -502,7 +506,7 @@ def train(args):
     
     pl.seed_everything()
     example = next(iter(train_dataloader))
-    model = GOModelWrapper(args.model, label_weights, args.lr, example, args.dropout, n_layers=args.n_layers)
+    model = GOModelWrapper(args.model, label_weights, args.lr, example, args.dropout, args.dadapt, n_layers=args.n_layers)
 
     root_dir = os.path.join(CHECKPOINT_PATH, args.model)
     os.makedirs(root_dir, exist_ok=True)
@@ -553,7 +557,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default='go', choices=['gvp','go'])
     parser.add_argument('--epochs', type=int, default=10)
-    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--n_layers', type=int, default=3)
     parser.add_argument('--gpus', type=int, default=0)
     parser.add_argument('--data_file', type=str, default=DATASET_PATH)
@@ -563,6 +567,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--num_nodes', type=int, default=1)
+    parser.add_argument('--dadapt', action='store_true')
     parser.add_argument('--slurm', action='store_true', help='Whether or not this is a SLURM job.')
     parser.add_argument(
         '--edge_method',
