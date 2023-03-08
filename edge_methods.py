@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Callable, List
+from typing import Any, Callable, List, Dict
 
 import torch
 import torch_cluster
@@ -12,15 +12,19 @@ def edge_generator_factory(
 ) -> EdgeGeneratorFactory:
     edge_methods = edge_method.split(" + ")
     if len(edge_methods) == 1:
-        return single_edge_generator_factory(edge_method, edge_method_params)
+        edge_methods = edge_method.split("+")
+        if len(edge_methods) == 1:
+            if edge_method in edge_method_params:
+                edge_method_params = edge_method_params[edge_method]
+            return single_edge_generator_factory(edge_method, edge_method_params)
 
     # We've got multiple edge methods, so we need to return a function that
     # will combine the returned edges
     edge_gen_funcs = []
     for edge_method in edge_methods:
         single_params = edge_method_params
-        if edge_method + "_params" in edge_method_params:
-            single_params = edge_method_params[edge_method + "_params"]
+        if edge_method in edge_method_params:
+            single_params = edge_method_params[edge_method]
         edge_gen_funcs.append(single_edge_generator_factory(edge_method, single_params))
 
     return combine_edge_generator_functions(edge_gen_funcs, edge_method_params)
@@ -31,7 +35,9 @@ def single_edge_generator_factory(
 ) -> EdgeGeneratorFactory:
     def _edge_gen_func(coords: torch.Tensor) -> torch.Tensor:
         if edge_method == "radius":
-            return torch_cluster.radius_graph(coords, **edge_method_params)
+            default_params = {"r": 4.5, "loop": False}
+            params = update_param_dict(default_params, edge_method_params)
+            return torch_cluster.radius_graph(coords, **params)
         elif edge_method == "knn":
             default_params = {
                 "k": 20,
@@ -46,7 +52,7 @@ def single_edge_generator_factory(
                 edge_method_params["k"] = edge_method_params["n_clusters"]
             params = update_param_dict(default_params, edge_method_params)
             return torch_cluster.knn_graph(coords, **params)
-        elif edge_method == "random_inverse_cubic":
+        elif edge_method == "random":
             default_params = {
                 "num_edges": 40,
                 "inverse_temp": 1,
@@ -109,7 +115,9 @@ def update_param_dict(
 ) -> dict[str, Any]:
     for key in org_dict:
         if key in new_dict:
-            org_dict[key] = new_dict[key]
+            # Doing an explicit cast to ensure the type matches
+            cast = type(org_dict[key])
+            org_dict[key] = cast(new_dict[key])
     return org_dict
 
 
@@ -159,3 +167,15 @@ def random_edge_generation(
     start_indices = torch.repeat_interleave(start_indices, num_edges)  # [N * K]
 
     return torch.stack([start_indices, end_indices], dim=0)  # [2, N * K]
+
+
+def convert_to_edge_method_params_dict(
+    edge_params: List[str],
+) -> Dict[str, Dict[str, Any]]:
+    edge_params_dict = dict()
+    for param in edge_params:
+        method, key, value = param
+        if method not in edge_params_dict:
+            edge_params_dict[method] = dict()
+        edge_params_dict[method][key] = value
+    return edge_params_dict

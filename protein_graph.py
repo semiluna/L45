@@ -92,15 +92,17 @@ class AtomGraphBuilder(ProteinGraphBuilder):
         node_alphabet: dict[str, int] = _element_alphabet,
         edge_cutoff: float = 4.5,
         edge_method: str = "radius",
-        edge_method_params: dict[str, Any] = dict(),
+        edge_method_params: dict[str, Any] = None,
         **kwargs
     ):
         super().__init__(node_alphabet, edge_cutoff, **kwargs)
 
-        if "r" not in edge_method_params:
-            edge_method_params["r"] = self.edge_cutoff
-        if "loop" not in edge_method_params:
-            edge_method_params["loop"] = self.self_loop
+        if edge_method_params is None:
+            edge_method_params = dict()
+            edge_method_params["radius"] = {
+                "r": self.edge_cutoff,
+                "loop": self.self_loop
+            }
 
         self.edge_generator = edge_generator_factory(
             edge_method=edge_method, edge_method_params=edge_method_params

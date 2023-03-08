@@ -37,6 +37,8 @@ from pdb_dataset import ProteinDataset
 from gvp import GVP_GNN
 from protein_graph import AtomGraphBuilder, _element_alphabet
 
+from edge_methods import convert_to_edge_method_params_dict
+
 DATASET_PATH = '/Users/antoniaboca/Downloads/split-by-cath-topology/data'
 CHECKPOINT_PATH = os.environ.get("PATH_CHECKPOINT", "saved_models/")
 
@@ -311,12 +313,16 @@ class GOModelWrapper(pl.LightningModule):
 
 
 class GODataset(IterableDataset):
-    def __init__(self, dataset, max_len=None, split='train', shuffle=False):
+    def __init__(
+            self, dataset, max_len=None, split='train', shuffle=False, edge_method="radius", edge_method_params=dict()
+        ):
         self.dataset = dataset
         start, stop = 0, len(dataset)
         self.max_len = max_len
         self.shuffle = shuffle
-        self.graph_builder = AtomGraphBuilder(_element_alphabet)
+        self.graph_builder = AtomGraphBuilder(
+            _element_alphabet, edge_method=edge_method, edge_method_params=edge_method_params
+        )
         # import ipdb; ipdb.set_trace()
         if split == 'train':
             start, stop = 0, dataset.num_samples[0]
@@ -436,16 +442,36 @@ def train(args):
     #                     max_len=args.max_len, sample_per_item = args.sample_per_item), 
     #                     batch_size=args.batch_size, num_workers=args.data_workers)
     print('INFO: loading all graphs into memory...')
-    raw_dataset = ProteinDataset(args.data_file) 
-    train_dataloader = geom_DataLoader(GODataset(raw_dataset, split='train', max_len=args.max_len, shuffle=False), 
-                        batch_size=args.batch_size, num_workers=args.data_workers)
-                        
-    val_dataloader = geom_DataLoader(GODataset(raw_dataset, split='valid', max_len=args.max_len, shuffle=False), 
-                        batch_size=args.batch_size, num_workers=args.data_workers)
-    
-    test_dataloader = geom_DataLoader(GODataset(raw_dataset, split='test', max_len=args.max_len, shuffle=False), 
-                        batch_size=args.batch_size, num_workers=args.data_workers)
-    
+    raw_dataset = ProteinDataset(args.data_file)
+    edge_method_params = convert_to_edge_method_params_dict(args.edge_params)
+
+    train_dataloader = geom_DataLoader(
+        GODataset(
+            raw_dataset, split='train', max_len=args.max_len, shuffle=False,
+            edge_method=args.edge_method, edge_method_params=edge_method_params,
+        ),
+        batch_size=args.batch_size,
+        num_workers=args.data_workers,
+    )
+
+    val_dataloader = geom_DataLoader(
+        GODataset(
+            raw_dataset, split='valid', max_len=args.max_len, shuffle=False,
+            edge_method=args.edge_method, edge_method_params=edge_method_params,
+        ),
+        batch_size=args.batch_size,
+        num_workers=args.data_workers,
+    )
+
+    test_dataloader = geom_DataLoader(
+        GODataset(
+            raw_dataset, split='test', max_len=args.max_len, shuffle=False,
+            edge_method=args.edge_method, edge_method_params=edge_method_params,
+        ),
+        batch_size=args.batch_size,
+        num_workers=args.data_workers,
+    )
+
     # Compute class weights 
     
     if os.path.exists('class_weights.pkl'):
@@ -528,6 +554,24 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--num_nodes', type=int, default=1)
     parser.add_argument('--slurm', action='store_true', help='Whether or not this is a SLURM job.')
+    parser.add_argument(
+        '--edge_method',
+        type=str,
+        default='radius',
+        help='What edge method to use. Options: ["radius" (default), "knn", "random"]. '
+             'Multiple methods can be given as a single string, with each method separated '
+             'by a "+". For example, "knn + random" would add edges using knn clustering, '
+             'followed by random edges.'
+    )
+    parser.add_argument(
+        "--edge_params",
+        nargs=3,
+        action="append",
+        default=[],
+        help='Params to pass to the edge generator function. Usage requires passing 3 arguments -- '
+             'the edge method, the key and the value. Example: "--edge_params knn k 3" sets the value '
+             'of k to 3 for the knn edge generation method.'
+    )
 
     args = parser.parse_args()
     train(args)
