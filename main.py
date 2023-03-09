@@ -521,6 +521,8 @@ def train(args):
         else:
             plugins = None
 
+        torch.set_float32_matmul_precision('high')
+
         trainer = pl.Trainer(
             default_root_dir=root_dir,
             callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", 
