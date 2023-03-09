@@ -35,7 +35,7 @@ def single_edge_generator_factory(
 ) -> EdgeGeneratorFactory:
     def _edge_gen_func(coords: torch.Tensor) -> torch.Tensor:
         if edge_method == "radius":
-            default_params = {"r": 4.5, "loop": False}
+            default_params = {"r": 10.0, "loop": False}
             params = update_param_dict(default_params, edge_method_params)
             return torch_cluster.radius_graph(coords, **params)
         elif edge_method == "knn":

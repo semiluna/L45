@@ -326,7 +326,9 @@ class GODataset(IterableDataset):
         # self.graph_builder = AtomGraphBuilder(
         #     _element_alphabet, edge_method=edge_method, edge_method_params=edge_method_params
         # )
-        self.graph_builder = ResidueGraphBuilder()
+        self.graph_builder = ResidueGraphBuilder(
+            edge_method=edge_method, edge_method_params=edge_method_params
+        )
 
         # import ipdb; ipdb.set_trace()
         if split == 'train':

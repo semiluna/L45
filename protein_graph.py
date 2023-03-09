@@ -194,11 +194,24 @@ class ResidueGraphBuilder(ProteinGraphBuilder):
         granularity: Literal["CA", "centroid", "backbone"] = "CA",
         edge_cutoff: float = 10.0,
         n_pos_embeddings: int = 16,
+        edge_method: str = "radius",
+        edge_method_params: dict[str, Any] = None,
         **kwargs,
     ):
         super().__init__(node_alphabet, edge_cutoff, **kwargs)
         self.granularity = granularity
         self.n_pos_embeddings = n_pos_embeddings
+
+        if edge_method_params is None:
+            edge_method_params = dict()
+            edge_method_params["radius"] = {
+                "r": self.edge_cutoff,
+                "loop": self.self_loop
+            }
+
+        self.edge_generator = edge_generator_factory(
+            edge_method=edge_method, edge_method_params=edge_method_params
+        )
 
     def __call__(self, df: pd.DataFrame) -> torch_geometric.data.Data:
 
@@ -211,7 +224,7 @@ class ResidueGraphBuilder(ProteinGraphBuilder):
         coords[~mask] = np.inf
 
         # Get edges
-        edge_index = torch_cluster.radius_graph(coords, r=self.edge_cutoff, loop=self.self_loop)
+        edge_index = self.edge_generator(coords)
 
         # Add node features
         dihedrals = self._dihedrals(df)
