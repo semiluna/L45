@@ -7,6 +7,15 @@ import torch_cluster
 EdgeGeneratorFactory = Callable[[torch.Tensor], torch.Tensor]
 
 
+def edge_generator(
+    coords: torch.Tensor, edge_method: str, edge_method_params: dict[str, Any]
+) -> torch.Tensor:
+    method = edge_generator_factory(
+        edge_method=edge_method, edge_method_params=edge_method_params
+    )
+    return method(coords)
+
+
 def edge_generator_factory(
     edge_method: str, edge_method_params: dict[str, Any]
 ) -> EdgeGeneratorFactory:

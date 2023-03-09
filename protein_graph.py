@@ -16,6 +16,7 @@ from Bio.Data.IUPACData import protein_letters_3to1
 
 from proteins import STANDARD_AMINO_ACIDS, STANDARD_ELEMENTS
 from edge_methods import edge_generator_factory
+from edge_methods import edge_generator
 
 _aa_alphabet = {aa: i for i, aa in enumerate(STANDARD_AMINO_ACIDS)}
 _element_alphabet = {el: i for i, el in enumerate(STANDARD_ELEMENTS)}
@@ -209,9 +210,8 @@ class ResidueGraphBuilder(ProteinGraphBuilder):
                 "loop": self.self_loop
             }
 
-        self.edge_generator = edge_generator_factory(
-            edge_method=edge_method, edge_method_params=edge_method_params
-        )
+        self.edge_method = edge_method
+        self.edge_method_params = edge_method_params
 
     def __call__(self, df: pd.DataFrame) -> torch_geometric.data.Data:
 
@@ -224,7 +224,11 @@ class ResidueGraphBuilder(ProteinGraphBuilder):
         coords[~mask] = np.inf
 
         # Get edges
-        edge_index = self.edge_generator(coords)
+        edge_index = edge_generator(
+            coords=coords,
+            edge_method=self.edge_method,
+            edge_method_params=self.edge_method_params,
+        )
 
         # Add node features
         dihedrals = self._dihedrals(df)
