@@ -348,7 +348,7 @@ class GODataset(IterableDataset):
         length = self.stop - self.start
         if self.max_len:
             length = min(length, self.max_len)
-        indices = list(range(self.start, self.stop + length))
+        indices = list(range(self.start, self.start + length))
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is None:
             gen = self._dataset_generator(indices)
