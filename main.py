@@ -508,12 +508,19 @@ def train(args):
     
     pl.seed_everything()
     example = next(iter(train_dataloader))
-    model = GOModelWrapper(args.model, label_weights, args.lr, example, args.dropout, args.dadapt, n_layers=args.n_layers)
+    if args.resume_checkpoint is not None:
+        model = GOModelWrapper.load_from_checkpoint(args.resume_checkpoint, model_name=args.model, 
+                                        label_weight=label_weights, lr=args.lr, example=example, dropout=args.dropout, adapt=args.dadapt, n_layers=args.n_layers)
+    else:
+        model = GOModelWrapper(args.model, label_weights, args.lr, example, args.dropout, args.dadapt, n_layers=args.n_layers)
 
     root_dir = os.path.join(CHECKPOINT_PATH, args.model)
     os.makedirs(root_dir, exist_ok=True)
 
-    wandb_logger = WandbLogger(project='l45-team')
+    if args.resume_checkpoint is None:
+        wandb_logger = WandbLogger(project='l45-team')
+    else:
+        wandb_logger = WandbLogger(project='l45-team', id=args.wandb_id, resume='must')
     # lt.monkey_patch()
     if args.gpus > 0:
         if args.slurm:
@@ -591,6 +598,8 @@ def main():
              'the edge method, the key and the value. Example: "--edge_params knn k 3" sets the value '
              'of k to 3 for the knn edge generation method.'
     )
+    parser.add_argument('--resume_checkpoint', type=str, default=None)
+    parser.add_argument('--wandb_id', type=str, default=None)
 
     args = parser.parse_args()
     train(args)
