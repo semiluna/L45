@@ -527,7 +527,7 @@ def train(args):
         torch.set_float32_matmul_precision('high')
         trainer = pl.Trainer(
             default_root_dir=root_dir,
-            callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", 
+            callbacks=[ModelCheckpoint(mode="max", 
                                         monitor="val_f1_max_on_epoch_end")],
             log_every_n_steps=1,
             max_epochs=args.epochs,
@@ -541,7 +541,7 @@ def train(args):
     else:
         trainer = pl.Trainer(
             default_root_dir=root_dir,
-            callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", 
+            callbacks=[ModelCheckpoint(mode="max", 
                                         monitor="val_f1_max_on_epoch_end")],
             log_every_n_steps=1,
             max_epochs=args.epochs,
