@@ -54,11 +54,6 @@ def single_edge_generator_factory(
                 "loop": False,
                 "flow": "source_to_target",
             }
-            if "k" not in edge_method_params:
-                assert (
-                    "n_clusters" in edge_method_params
-                ), "Need the number of clusters to perform knn."
-                edge_method_params["k"] = edge_method_params["n_clusters"]
             params = update_param_dict(default_params, edge_method_params)
             return torch_cluster.knn_graph(coords, **params)
         elif edge_method == "random":
