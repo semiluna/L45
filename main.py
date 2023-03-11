@@ -508,11 +508,7 @@ def train(args):
     
     pl.seed_everything()
     example = next(iter(train_dataloader))
-    if args.resume_checkpoint is not None:
-        model = GOModelWrapper.load_from_checkpoint(args.resume_checkpoint, model_name=args.model, 
-                                        label_weight=label_weights, lr=args.lr, example=example, dropout=args.dropout, adapt=args.dadapt, n_layers=args.n_layers)
-    else:
-        model = GOModelWrapper(args.model, label_weights, args.lr, example, args.dropout, args.dadapt, n_layers=args.n_layers)
+    model = GOModelWrapper(args.model, label_weights, args.lr, example, args.dropout, args.dadapt, n_layers=args.n_layers)
 
     root_dir = os.path.join(CHECKPOINT_PATH, args.model)
     os.makedirs(root_dir, exist_ok=True)
@@ -529,7 +525,6 @@ def train(args):
             plugins = None
 
         torch.set_float32_matmul_precision('high')
-
         trainer = pl.Trainer(
             default_root_dir=root_dir,
             callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", 
@@ -541,7 +536,7 @@ def train(args):
             num_nodes = args.num_nodes,
             strategy='ddp',
             logger=wandb_logger,
-            plugins=plugins
+            plugins=plugins,
         ) 
     else:
         trainer = pl.Trainer(
@@ -550,12 +545,13 @@ def train(args):
                                         monitor="val_f1_max_on_epoch_end")],
             log_every_n_steps=1,
             max_epochs=args.epochs,
-            logger=wandb_logger
+            logger=wandb_logger,
         )
 
     print('Start training...')
+    ckpt_path = args.resume_checkpoint
     start = time.time()
-    trainer.fit(model, train_dataloader, val_dataloader)
+    trainer.fit(model, train_dataloader, val_dataloader, ckpt_path=ckpt_path)
     end = time.time()
     print('TRAINING TIME: {:.4f} (s)'.format(end - start))
     best_model = GOModelWrapper(args.model, label_weights, args.lr, example, args.dropout, args.dadapt, n_layers=args.n_layers)
