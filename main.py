@@ -445,7 +445,7 @@ class RESDataset(IterableDataset):
 
 
 def train(args):
-    pl.seed_everything(42)
+    pl.seed_everything(args.seed)
     # train_dataloader = geom_DataLoader(RESDataset(os.path.join(args.data_file, 'train'), shuffle=False, 
     #                     max_len=args.max_len, sample_per_item = args.sample_per_item), 
     #                     batch_size=args.batch_size, num_workers=args.data_workers)
@@ -506,7 +506,7 @@ def train(args):
         with open('class_weights.pkl', 'wb') as handle:
             pickle.dump(label_weights, handle)
     
-    pl.seed_everything()
+    pl.seed_everything(args.seed)
     example = next(iter(train_dataloader))
     model = GOModelWrapper(args.model, label_weights, args.lr, example, args.dropout, args.dadapt, n_layers=args.n_layers)
 
@@ -598,6 +598,7 @@ def main():
              'the edge method, the key and the value. Example: "--edge_params knn k 3" sets the value '
              'of k to 3 for the knn edge generation method.'
     )
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--resume_checkpoint', type=str, default=None)
     parser.add_argument('--wandb_id', type=str, default=None)
 
