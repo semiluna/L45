@@ -1,10 +1,10 @@
 from __future__ import annotations
-from typing import Any, Callable, List, Dict
+from typing import Any, Callable, List, Dict, Optional
 
 import torch
 import torch_cluster
 
-EdgeGeneratorFactory = Callable[[torch.Tensor], torch.Tensor]
+EdgeGeneratorFactory = Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor]
 
 
 def edge_generator(
@@ -36,13 +36,17 @@ def edge_generator_factory(
             single_params = edge_method_params[edge_method]
         edge_gen_funcs.append(single_edge_generator_factory(edge_method, single_params))
 
-    return combine_edge_generator_functions(edge_gen_funcs, edge_method_params)
+    combiner_params = edge_method_params
+    if "combiner" in edge_method_params:
+        combiner_params = edge_method_params["combiner"]
+
+    return combine_edge_generator_functions(edge_gen_funcs, combiner_params)
 
 
 def single_edge_generator_factory(
     edge_method: str, edge_method_params: dict[str, Any]
 ) -> EdgeGeneratorFactory:
-    def _edge_gen_func(coords: torch.Tensor) -> torch.Tensor:
+    def _edge_gen_func(coords: torch.Tensor, mask_out: Optional[torch.Tensor] = None) -> torch.Tensor:
         if edge_method == "radius":
             default_params = {"r": 10.0, "loop": False}
             params = update_param_dict(default_params, edge_method_params)
@@ -63,7 +67,7 @@ def single_edge_generator_factory(
                 "probability_distribution": "inverse_cubic",
             }
             params = update_param_dict(default_params, edge_method_params)
-            return random_edge_generation(coords, **params)
+            return random_edge_generation(coords, mask_out, **params)
         else:
             raise ValueError("Unexpected edge method provided: {}".format(edge_method))
 
@@ -71,15 +75,18 @@ def single_edge_generator_factory(
 
 
 def combine_edge_generator_functions(
-    edge_gen_funcs: List[EdgeGeneratorFactory], edge_method_params: dict[str, Any]
+    edge_gen_funcs: List[EdgeGeneratorFactory], combiner_params: dict[str, Any]
 ) -> EdgeGeneratorFactory:
     default_params = {"aggregation": "unique"}
-    combiner_params = update_param_dict(default_params, edge_method_params)
+    combiner_params = update_param_dict(default_params, combiner_params)
 
     def _combiner_func(coords: torch.Tensor) -> torch.Tensor:
         edges = []
+        concatenated_edge_indices = None
         for edge_gen_func in edge_gen_funcs:
-            edges.append(edge_gen_func(coords))
+            edges.append(edge_gen_func(coords, concatenated_edge_indices))
+            if combiner_params["aggregation"] == "mask_prev":
+                concatenated_edge_indices = torch.concatenate(edges, dim=1)
 
         if combiner_params["aggregation"] == "unique":
             concatenated_edge_indices = torch.concatenate(edges, dim=1)
@@ -103,6 +110,8 @@ def combine_edge_generator_functions(
                 [sorted_cnct_edge_indices[:, 0:1], unique_edge_indices], dim=1
             )
         elif combiner_params["aggregation"] == "concatenate":
+            return torch.concatenate(edges, dim=1)
+        elif combiner_params["aggregation"] == "mask_prev":
             return torch.concatenate(edges, dim=1)
         else:
             raise ValueError(
@@ -147,6 +156,7 @@ def calculate_phi(
 
 def random_edge_generation(
     coords: torch.Tensor,
+    mask_out: Optional[torch.Tensor],
     inverse_temp: float,
     num_edges: int,
     probability_distribution: str,
@@ -162,6 +172,10 @@ def random_edge_generation(
     log_epsilon = torch.log(epsilon)
 
     zs = inverse_temp * phi - torch.log(-log_epsilon)  # [N, N]
+    zs = zs.fill_diagonal_(-torch.inf)
+    if mask_out is not None:
+        # Masking out these values by setting zs to negative infinity
+        zs[mask_out[0], mask_out[1]] = -torch.inf
 
     _, end_indices = torch.topk(
         zs, k=num_edges, dim=1, largest=True, sorted=False
