@@ -513,12 +513,10 @@ def train(args):
     root_dir = os.path.join(CHECKPOINT_PATH, args.model)
     os.makedirs(root_dir, exist_ok=True)
 
-    # if args.resume_checkpoint is None:
-    #     wandb_logger = WandbLogger(project='l45-team')
-    # else:
-    #     wandb_logger = WandbLogger(project='l45-team', id=args.wandb_id, resume='must')
-    wandb_logger = True
-    # lt.monkey_patch()
+    if args.resume_checkpoint is None:
+        wandb_logger = WandbLogger(project='l45-team')
+    else:
+        wandb_logger = WandbLogger(project='l45-team', id=args.wandb_id, resume='must')
     if args.gpus > 0:
         if args.slurm:
             plugins = [SLURMEnvironment(requeue_signal=signal.SIGHUP)]
@@ -537,7 +535,7 @@ def train(args):
             accelerator='gpu',
             devices=args.gpus,
             num_nodes = args.num_nodes,
-            # strategy='ddp',
+            strategy='ddp',
             logger=wandb_logger,
             plugins=plugins,
         ) 
