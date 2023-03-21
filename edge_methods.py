@@ -46,7 +46,9 @@ def edge_generator_factory(
 def single_edge_generator_factory(
     edge_method: str, edge_method_params: dict[str, Any]
 ) -> EdgeGeneratorFactory:
-    def _edge_gen_func(coords: torch.Tensor, mask_out: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _edge_gen_func(
+        coords: torch.Tensor, mask_out: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         if edge_method == "radius":
             default_params = {"r": 10.0, "loop": False}
             params = update_param_dict(default_params, edge_method_params)
@@ -145,7 +147,7 @@ def calculate_phi(
         default_params = {"scale": 1.0}
         params = update_param_dict(default_params, kwargs)
         scale = params["scale"]
-        return -dists * kwargs / scale
+        return -dists / scale
     else:
         raise ValueError(
             "Unexpected probability method for random edges provided: {}".format(
